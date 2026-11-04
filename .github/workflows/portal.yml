@@ -1,0 +1,133 @@
+name: Portal de propietarios
+
+# Va atado al Cierre B: del 4 al 15 de cada mes revisa cada hora si en TRAZABILIDAD ya están
+# el check de Felipe al Cierre A y la Corrida Cierre B del mes anterior. Si están y el portal de
+# ese mes no está publicado, lo genera y lo publica; si no, termina en segundos sin hacer nada.
+# También se puede correr a mano desde Actions.
+on:
+  schedule:
+    - cron: '17 * 4-15 * *'
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: 'Mes a publicar (AAAA-MM). Vacío = mes anterior'
+        required: false
+      forzar:
+        description: 'Republicar aunque ya exista la Corrida Portal del mes'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portal
+  cancel-in-progress: false
+
+jobs:
+  portal:
+    runs-on: ubuntu-latest
+    env:
+      AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependencias
+        run: pip install cryptography
+
+      - name: Candado
+        id: candado
+        run: |
+          set +e
+          ARGS=""
+          if [ -n "${{ inputs.mes }}" ]; then ARGS="--mes ${{ inputs.mes }}"; fi
+          if [ "${{ inputs.forzar }}" = "true" ]; then ARGS="$ARGS --forzar"; fi
+          M=$(python3 tools/airtable_portal.py candado $ARGS)
+          CODE=$?
+          set -e
+          if [ $CODE -eq 3 ]; then echo "toca=no" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ $CODE -ne 0 ]; then exit $CODE; fi
+          echo "mes=$M" >> $GITHUB_OUTPUT
+          echo "toca=si" >> $GITHUB_OUTPUT
+
+      - name: Descargar de Airtable
+        if: steps.candado.outputs.toca == 'si'
+        run: python3 tools/airtable_portal.py descargar --work "$RUNNER_TEMP/portal" --mes "${{ steps.candado.outputs.mes }}"
+
+      - name: Generar portal
+        id: build
+        if: steps.candado.outputs.toca == 'si'
+        run: |
+          set +e
+          python3 tools/scripts/build_portal.py --work "$RUNNER_TEMP/portal"
+          CODE=$?
+          set -e
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+          python3 tools/resumen.py "$RUNNER_TEMP/portal/out/reporte.json" "${{ steps.candado.outputs.mes }}" >> $GITHUB_OUTPUT
+          if [ $CODE -ne 0 ] && [ $CODE -ne 2 ]; then exit $CODE; fi
+
+      - name: Publicar
+        id: pub
+        if: steps.candado.outputs.toca == 'si' && steps.build.outputs.code == '0'
+        run: |
+          M="${{ steps.candado.outputs.mes }}"
+          SITE="$RUNNER_TEMP/portal/out/portal-propietarios-$M"
+          for f in index.html vercel.json _headers robots.txt; do cp "$SITE/$f" "./$f"; done
+          git config user.name "Verse OS"
+          git config user.email "felipe@verseliving.com"
+          git add index.html vercel.json _headers robots.txt
+          if git diff --cached --quiet; then echo "sha=sin-cambios" >> $GITHUB_OUTPUT; exit 0; fi
+          git commit -m "Portal de propietarios · corte $M"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          # Espera a que Vercel sirva el corte nuevo (hasta 5 minutos)
+          LOCAL=$(sha256sum index.html | cut -d' ' -f1)
+          for i in $(seq 1 30); do
+            sleep 10
+            REMOTO=$(curl -s https://portal.versehost.co/ | sha256sum | cut -d' ' -f1)
+            if [ "$REMOTO" = "$LOCAL" ]; then echo "deploy=ok" >> $GITHUB_OUTPUT; exit 0; fi
+          done
+          echo "deploy=pendiente" >> $GITHUB_OUTPUT
+
+      - name: Registrar en TRAZABILIDAD
+        if: always() && steps.candado.outputs.toca == 'si'
+        run: |
+          M="${{ steps.candado.outputs.mes }}"
+          ENC="${{ steps.build.outputs.encontro }}"
+          SHA="${{ steps.pub.outputs.sha }}"
+          DEP="${{ steps.pub.outputs.deploy }}"
+          PEND=()
+          if [ "${{ steps.build.outputs.code }}" = "2" ]; then
+            python3 tools/airtable_portal.py registrar --mes "$M" --resultado "Falló" \
+              --asunto "Portal frenado por liquidación duplicada" --encontro "$ENC" \
+              --hizo "portal generado en GitHub Actions; bloqueo del script, no se publicó" \
+              --pendiente "Liquidación duplicada en el portal|Revisar en F_CORTAS la unidad con dos liquidaciones del mismo mes y relanzar el flujo Portal de propietarios en GitHub"
+          elif [ "${{ job.status }}" != "success" ] || [ -z "$SHA" ]; then
+            python3 tools/airtable_portal.py registrar --mes "$M" --resultado "Falló" \
+              --asunto "Portal sin publicar desde GitHub" --encontro "${ENC:-sin datos}" \
+              --hizo "el flujo de GitHub Actions falló antes de publicar" \
+              --pendiente "Portal sin publicar|Revisar la corrida fallida del flujo Portal de propietarios en GitHub (felipe734/vh-portal, Actions)"
+          else
+            RES="OK"
+            if [ "${{ steps.build.outputs.faltantes }}" != "0" ] || [ "$DEP" != "ok" ]; then RES="Con pendientes"; fi
+            ARGS=()
+            if [ "${{ steps.build.outputs.faltantes }}" != "0" ]; then
+              ARGS+=(--pendiente "Propietarios sin acceso al portal|Revisar en el reporte del flujo de GitHub los propietarios sin email o sin contraseña y las unidades sin propietario")
+            fi
+            if [ "$DEP" != "ok" ]; then
+              ARGS+=(--pendiente "Deploy del portal sin confirmar|Confirmar en Vercel (versehost-portal) que el deploy del commit $SHA quedó READY")
+            fi
+            python3 tools/airtable_portal.py registrar --mes "$M" --resultado "$RES" \
+              --asunto "Corte publicado en el portal" --encontro "$ENC" \
+              --hizo "publicado desde GitHub Actions, commit $SHA, deploy $DEP" "${ARGS[@]}"
+          fi
+
+      - name: Reporte
+        if: always() && steps.candado.outputs.toca == 'si'
+        run: |
+          # Solo avisos y cifras: el reporte.json trae cuentas de prueba y no se publica.
+          sed -n '1,200p' "$RUNNER_TEMP/portal/out/reporte.md" >> $GITHUB_STEP_SUMMARY || true
