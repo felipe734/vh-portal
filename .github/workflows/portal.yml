@@ -10,6 +10,8 @@ name: Portal de propietarios
 on:
   schedule:
     - cron: '17 * 4-15 * *'
+    # Cada hora: si cambió una liquidación, reserva, adicional o propietario, republica el último mes cerrado
+    - cron: '47 * * * *'
   repository_dispatch:
     types: [liquidacion-actualizada]
   workflow_dispatch:
@@ -55,7 +57,10 @@ jobs:
           ARGS=""
           if [ -n "${{ inputs.mes }}" ]; then ARGS="--mes ${{ inputs.mes }}"; fi
           if [ "${{ inputs.forzar }}" = "true" ]; then ARGS="$ARGS --forzar"; fi
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          if [ "${{ github.event.schedule }}" = "47 * * * *" ]; then
+            python3 tools/airtable_portal.py cambios || { echo "toca=no" >> $GITHUB_OUTPUT; exit 0; }
+          fi
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] || [ "${{ github.event.schedule }}" = "47 * * * *" ]; then
             ULT=$(python3 tools/airtable_portal.py ultimo-cerrado) || { echo "toca=no" >> $GITHUB_OUTPUT; exit 0; }
             ARGS="--mes $ULT --forzar"
           fi
@@ -107,7 +112,7 @@ jobs:
           echo "deploy=pendiente" >> $GITHUB_OUTPUT
 
       - name: Registrar en TRAZABILIDAD
-        if: always() && steps.candado.outputs.toca == 'si' && !(github.event_name == 'repository_dispatch' && steps.pub.outputs.sha == 'sin-cambios')
+        if: always() && steps.candado.outputs.toca == 'si' && !((github.event_name == 'repository_dispatch' || github.event.schedule == '47 * * * *') && steps.pub.outputs.sha == 'sin-cambios')
         run: |
           M="${{ steps.candado.outputs.mes }}"
           ENC="${{ steps.build.outputs.encontro }}"
@@ -135,7 +140,7 @@ jobs:
               ARGS+=(--pendiente "Deploy del portal sin confirmar|Confirmar en Vercel (versehost-portal) que el deploy del commit $SHA quedó READY")
             fi
             ASUNTO="Corte publicado en el portal"
-            if [ "${{ github.event_name }}" = "repository_dispatch" ]; then ASUNTO="Portal republicado por cambio en liquidación"; fi
+            if [ "${{ github.event_name }}" = "repository_dispatch" ] || [ "${{ github.event.schedule }}" = "47 * * * *" ]; then ASUNTO="Portal republicado por cambio en liquidación"; fi
             python3 tools/airtable_portal.py registrar --mes "$M" --resultado "$RES" \
               --asunto "$ASUNTO" --encontro "$ENC" \
               --hizo "publicado desde GitHub Actions, commit $SHA, deploy $DEP" "${ARGS[@]}"

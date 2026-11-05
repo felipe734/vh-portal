@@ -2,6 +2,8 @@
 """Puente Airtable <-> portal de propietarios para GitHub Actions.
 
 Subcomandos:
+  cambios    sale con 0 si hubo cambios en liquidaciones en los últimos 65 min (3 si no).
+  ultimo-cerrado  imprime el último mes con Corrida Cierre B.
   candado    imprime M (AAAA-MM) si el portal de M debe publicarse; sale con 3 si no toca.
   descargar  --work DIR --mes M   baja F_CORTAS, RESERVAS, ADICIONALES y PROPIETARIOS a DIR/raw
              con el mismo formato que usa build_portal.py (links como {id, name}).
@@ -167,6 +169,20 @@ def cmd_ultimo_cerrado(a):
     print(ms[-1])
 
 
+def cmd_cambios(a):
+    """Sale con 0 si alguna liquidación, reserva, adicional o propietario cambió en los últimos N minutos; 3 si no."""
+    f = f"IS_AFTER(LAST_MODIFIED_TIME(), DATEADD(NOW(), -{a.minutos}, 'minutes'))"
+    for base, tabla, campo in ((OP360, F_CORTAS, FC[0]), (OP360, RESERVAS, RS[0]),
+                               (OP360, ADICIONALES, AD[0]), (INVENTARIO, PROPIETARIOS, PR[0])):
+        d = req('GET', f'/{base}/{tabla}', params={'pageSize': 1, 'returnFieldsByFieldId': 'true',
+                                                   'fields[]': [campo], 'filterByFormula': f})
+        if d.get('records'):
+            print(f'Cambio detectado en {tabla}', file=sys.stderr)
+            return
+    print('Sin cambios en liquidaciones', file=sys.stderr)
+    sys.exit(3)
+
+
 def meses(desde, hasta):
     y, mm = map(int, desde.split('-'))
     out = []
@@ -235,6 +251,8 @@ def main():
     c.add_argument('--mes')
     c.add_argument('--forzar', action='store_true')
     sub.add_parser('ultimo-cerrado')
+    ch = sub.add_parser('cambios')
+    ch.add_argument('--minutos', type=int, default=65)
     d = sub.add_parser('descargar')
     d.add_argument('--work', required=True)
     d.add_argument('--mes', required=True)
@@ -246,7 +264,7 @@ def main():
     r.add_argument('--hizo', required=True)
     r.add_argument('--pendiente', action='append', help='"Asunto|Acción"')
     a = ap.parse_args()
-    {'candado': cmd_candado, 'ultimo-cerrado': cmd_ultimo_cerrado, 'descargar': cmd_descargar, 'registrar': cmd_registrar}[a.cmd](a)
+    {'candado': cmd_candado, 'cambios': cmd_cambios, 'ultimo-cerrado': cmd_ultimo_cerrado, 'descargar': cmd_descargar, 'registrar': cmd_registrar}[a.cmd](a)
 
 
 if __name__ == '__main__':
