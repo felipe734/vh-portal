@@ -154,6 +154,19 @@ def cmd_candado(a):
     print(m)
 
 
+def cmd_ultimo_cerrado(a):
+    """Último mes con Corrida Cierre B válida (OK o Con pendientes) en TRAZABILIDAD."""
+    filas = listar(PEND, TRAZ, [T['tipo'], T['proceso'], T['mes'], T['estado'], T['resultado']], formula=None)
+    ms = sorted({val(r, T['mes']) for r in filas
+                 if val(r, T['tipo']) == 'Corrida' and val(r, T['proceso']) == 'Cierre B'
+                 and val(r, T['estado']) != 'Descartado' and val(r, T['resultado']) in ('OK', 'Con pendientes')
+                 and val(r, T['mes'])})
+    if not ms:
+        print('Sin mes con Cierre B', file=sys.stderr)
+        sys.exit(3)
+    print(ms[-1])
+
+
 def meses(desde, hasta):
     y, mm = map(int, desde.split('-'))
     out = []
@@ -221,6 +234,7 @@ def main():
     c = sub.add_parser('candado')
     c.add_argument('--mes')
     c.add_argument('--forzar', action='store_true')
+    sub.add_parser('ultimo-cerrado')
     d = sub.add_parser('descargar')
     d.add_argument('--work', required=True)
     d.add_argument('--mes', required=True)
@@ -232,7 +246,7 @@ def main():
     r.add_argument('--hizo', required=True)
     r.add_argument('--pendiente', action='append', help='"Asunto|Acción"')
     a = ap.parse_args()
-    dict(candado=cmd_candado, descargar=cmd_descargar, registrar=cmd_registrar)[a.cmd](a)
+    {'candado': cmd_candado, 'ultimo-cerrado': cmd_ultimo_cerrado, 'descargar': cmd_descargar, 'registrar': cmd_registrar}[a.cmd](a)
 
 
 if __name__ == '__main__':
