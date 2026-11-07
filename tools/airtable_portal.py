@@ -35,12 +35,14 @@ AD_MES = 'fld5Pd5nYEBmz3SMR'
 PR = ['fldIo79HDQDR9NZ3t', 'fldk43IQ8ZvVPYCEm', 'fldymnj9nW8YgVC0V', 'fldcFCRxUIamIfQ22', 'fldgqY5qwMuIo0Ksg']
 
 # TRAZABILIDAD
+# Esquema mínimo (2026-11-07): sin Fecha, Fecha cierre, Acción, Resultado ni Origen.
+# En una Corrida, Estado es el resultado (OK, Con pendientes, Frenado, Falló, Descartado);
+# en un Pendiente, Abierto, En espera, Hecho o Descartado. La primera línea del Detalle de un
+# Pendiente es la acción.
 T = dict(asunto='fldppIUsuUrLmlc48', tipo='fldDb4Fb3tp2VXC25', proceso='fldGUOALzCds6je18',
-         origen='fldfqQQNCFLsmhYQF', estado='flddfw5b19aj83Csy', resultado='fldxNzjSgklYOdjmx',
-         responsable='fldrTXOgKjNWE6pSC', linea='fld2HH8kQsK5ycMUD', fecha='fldz9tEsSyJ9RERDL',
-         limite='fld6Ym8eFYJTm2Kjg', cierre='fldI1dhL5bxlC2fa0', mes='fldUTrITzq0FWy0H8',
-         accion='fldDJ68jyyUKQpad4', detalle='fld0lNCNf0Hchucvc', corrida='fldIRVUlEO0IXIAy9',
-         link='fldOWwqbS3ZQhIDPX', ref='fldJDVZ6VMDuRzJ1k')
+         estado='flddfw5b19aj83Csy', responsable='fldrTXOgKjNWE6pSC', linea='fld2HH8kQsK5ycMUD',
+         limite='fld6Ym8eFYJTm2Kjg', mes='fldUTrITzq0FWy0H8', detalle='fld0lNCNf0Hchucvc',
+         corrida='fldIRVUlEO0IXIAy9', link='fldOWwqbS3ZQhIDPX', ref='fldJDVZ6VMDuRzJ1k')
 DESDE = '2026-05'
 EXCLUIR = [["Apto 207 - Open C60", "2026-06"]]
 PORTAL = 'https://portal.versehost.co'
@@ -124,7 +126,7 @@ def val(r, fid):
 
 def cmd_candado(a):
     m = a.mes or mes_anterior()
-    filas = listar(PEND, TRAZ, [T['tipo'], T['proceso'], T['mes'], T['estado'], T['resultado'], T['accion']],
+    filas = listar(PEND, TRAZ, [T['tipo'], T['proceso'], T['mes'], T['estado'], T['detalle']],
                    formula=None)
     filas = [r for r in filas if val(r, T['mes']) == m]
 
@@ -134,9 +136,9 @@ def cmd_candado(a):
                 continue
             if val(r, T['estado']) == 'Descartado':
                 continue
-            if ok and val(r, T['resultado']) not in ok:
+            if ok and val(r, T['estado']) not in ok:
                 continue
-            if accion and not str(val(r, T['accion']) or '').startswith(accion):
+            if accion and not str(val(r, T['detalle']) or '').startswith(accion):
                 continue
             if estado and val(r, T['estado']) != estado:
                 continue
@@ -158,10 +160,10 @@ def cmd_candado(a):
 
 def cmd_ultimo_cerrado(a):
     """Último mes con Corrida Cierre B válida (OK o Con pendientes) en TRAZABILIDAD."""
-    filas = listar(PEND, TRAZ, [T['tipo'], T['proceso'], T['mes'], T['estado'], T['resultado']], formula=None)
+    filas = listar(PEND, TRAZ, [T['tipo'], T['proceso'], T['mes'], T['estado']], formula=None)
     ms = sorted({val(r, T['mes']) for r in filas
                  if val(r, T['tipo']) == 'Corrida' and val(r, T['proceso']) == 'Cierre B'
-                 and val(r, T['estado']) != 'Descartado' and val(r, T['resultado']) in ('OK', 'Con pendientes')
+                 and val(r, T['estado']) in ('OK', 'Con pendientes')
                  and val(r, T['mes'])})
     if not ms:
         print('Sin mes con Cierre B', file=sys.stderr)
@@ -228,17 +230,16 @@ def cmd_descargar(a):
 
 def cmd_registrar(a):
     hoy = datetime.datetime.now(TZ).date().isoformat()
-    corrida = {T['asunto']: a.asunto, T['tipo']: 'Corrida', T['proceso']: 'Portal', T['origen']: 'Tarea',
-               T['estado']: 'Hecho', T['resultado']: a.resultado, T['linea']: 'Verse Host', T['fecha']: hoy,
-               T['cierre']: hoy, T['mes']: a.mes, T['link']: PORTAL,
+    corrida = {T['asunto']: a.asunto, T['tipo']: 'Corrida', T['proceso']: 'Portal',
+               T['estado']: a.resultado, T['linea']: 'Verse Host', T['mes']: a.mes, T['link']: PORTAL,
                T['detalle']: f'Encontró: {a.encontro}\nHizo: {a.hizo}'}
     d = req('POST', f'/{PEND}/{TRAZ}', body={'records': [{'fields': corrida}], 'typecast': True})
     rid = d['records'][0]['id']
     for p in a.pendiente or []:
         asunto, accion = (p.split('|', 1) + [p])[:2]
-        fila = {T['asunto']: asunto.strip(), T['tipo']: 'Pendiente', T['proceso']: 'Portal', T['origen']: 'Tarea',
-                T['estado']: 'Abierto', T['responsable']: 'Felipe', T['linea']: 'Verse Host', T['fecha']: hoy,
-                T['limite']: hoy, T['mes']: a.mes, T['accion']: accion.strip(), T['corrida']: [rid],
+        fila = {T['asunto']: asunto.strip(), T['tipo']: 'Pendiente', T['proceso']: 'Portal',
+                T['estado']: 'Abierto', T['responsable']: 'Felipe', T['linea']: 'Verse Host',
+                T['limite']: hoy, T['mes']: a.mes, T['detalle']: accion.strip(), T['corrida']: [rid],
                 T['link']: PORTAL}
         req('POST', f'/{PEND}/{TRAZ}', body={'records': [{'fields': fila}], 'typecast': True})
     print(rid)
